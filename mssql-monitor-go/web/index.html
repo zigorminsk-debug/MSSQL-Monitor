@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MS SQL Monitor — мониторинг MS SQL Server</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="brand"><span class="logo">📊</span> MS SQL Monitor <span class="ver">v1.0 · Go</span></div>
+  <div class="chips">
+    <span id="chip-conn" class="chip off">● не подключено</span>
+    <span id="chip-mon" class="chip off">○ мониторинг остановлен</span>
+  </div>
+</header>
+
+<div class="wrap">
+
+<div class="card connbar">
+  <label>Сервер <input id="server" placeholder="localhost или SRV\SQL2019" style="width:200px"></label>
+  <label>Аутентификация
+    <select id="auth"><option value="windows">Windows (доменная)</option><option value="sql">SQL Server (логин/пароль)</option></select>
+  </label>
+  <label class="sqlonly">Логин <input id="login" autocomplete="off"></label>
+  <label class="sqlonly">Пароль <input id="password" type="password"></label>
+  <button id="btn-connect" class="primary">Подключиться</button>
+  <button id="btn-test">Тест</button>
+  <button id="btn-demo" title="Посмотреть программу на имитации нагруженного сервера">🧪 Демо-режим</button>
+</div>
+
+<div class="cards">
+  <div class="kcard"><div class="v" id="k-cpu">—</div><div class="l">ЦП SQL, %</div></div>
+  <div class="kcard"><div class="v" id="k-batch">—</div><div class="l">Batch/сек</div></div>
+  <div class="kcard"><div class="v" id="k-conn">—</div><div class="l">Подключений</div></div>
+  <div class="kcard"><div class="v" id="k-ple">—</div><div class="l">PLE, сек</div></div>
+  <div class="kcard"><div class="v" id="k-blocked">—</div><div class="l">Заблокировано</div></div>
+  <div class="kcard"><div class="v" id="k-health">—</div><div class="l">Health score</div></div>
+</div>
+
+<div class="card chartcard">
+  <div class="chart-head">
+    <span>Загрузка в реальном времени</span>
+    <span class="legend"><i style="background:#dc2626"></i> ЦП SQL, % &nbsp; <i style="background:#2563eb"></i> Batch/сек</span>
+  </div>
+  <canvas id="chart" height="230"></canvas>
+</div>
+
+<div class="controls">
+  <button id="btn-start" class="primary">▶ Начать суточный мониторинг</button>
+  <button id="btn-stop" disabled>⏸ Остановить</button>
+  <button id="btn-snapshot" disabled>📸 Полный снимок + отчёт</button>
+  <button id="btn-daily" disabled>📄 Суточный отчёт (24 ч)</button>
+  <label class="interval">Интервал, сек: <input id="interval" type="number" min="10" max="3600" step="5" value="30" style="width:70px"></label>
+</div>
+
+<nav class="tabs">
+  <button data-tab="recs" class="tab active">Рекомендации</button>
+  <button data-tab="causes" class="tab">Причины замедлений</button>
+  <button data-tab="reports" class="tab">Отчёты</button>
+  <button data-tab="log" class="tab">Журнал</button>
+  <button data-tab="settings" class="tab">Настройки</button>
+</nav>
+
+<section id="tab-recs" class="tabbody">
+  <div class="card hint" id="recs-summary">Анализ ещё не выполнялся — подключитесь и нажмите «Полный снимок + отчёт».</div>
+  <div class="findtable-wrap"><table id="findings"><thead><tr>
+    <th style="width:110px">Важность</th><th style="width:150px">Область</th><th>Рекомендация</th>
+  </tr></thead><tbody></tbody></table></div>
+  <pre id="finding-detail" class="detail"></pre>
+</section>
+
+<section id="tab-causes" class="tabbody hidden">
+  <div id="causes-list"></div>
+</section>
+
+<section id="tab-reports" class="tabbody hidden">
+  <div class="card hint" id="reports-hint">Отчёты открываются в новой вкладке, хранятся в папке data\reports.</div>
+  <table id="reports"><thead><tr><th>Файл</th><th style="width:220px">Действия</th></tr></thead><tbody></tbody></table>
+</section>
+
+<section id="tab-log" class="tabbody hidden">
+  <pre id="log" class="logpre"></pre>
+</section>
+
+<section id="tab-settings" class="tabbody hidden">
+  <div class="card settings">
+    <h3>Параметры мониторинга и отчётов</h3>
+    <div class="sgrid">
+      <label>Порог «медленного» запроса, мс <input id="s-slowms" type="number" min="500" step="500"></label>
+      <label>Хранить историю, дней <input id="s-retention" type="number" min="1" max="90"></label>
+      <label>Время автосуточного отчёта (ЧЧ:ММ) <input id="s-dailytime" placeholder="08:00"></label>
+      <label class="check"><input id="s-dailyon" type="checkbox"> Автоотчёт каждый день</label>
+      <label class="check"><input id="s-deep" type="checkbox"> Глубокий анализ индексов (медленнее)</label>
+      <label class="check"><input id="s-autostart" type="checkbox"> Запускать мониторинг после подключения</label>
+      <label class="check"><input id="s-encrypt" type="checkbox"> Шифровать подключение</label>
+      <label class="check"><input id="s-trust" type="checkbox"> Доверять сертификату сервера</label>
+    </div>
+    <div class="btns"><button id="btn-savesettings" class="primary">Сохранить</button>
+    <span id="settings-status"></span></div>
+  </div>
+</section>
+
+<footer class="footer">MS SQL Monitor — мониторинг, диагностика и рекомендации для MS SQL Server. Данные: <span id="datadir"></span></footer>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+<script src="/app.js"></script>
+</body>
+</html>

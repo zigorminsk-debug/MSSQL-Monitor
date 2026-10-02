@@ -788,7 +788,7 @@ sys.dm_db_missing_index_* (недостающие индексы), sys.dm_db_ind
 	b.WriteString(sectionHTML("11", "Методика и ограничения", "method", method))
 
 	b.WriteString(fmt.Sprintf("<div class='footer'>Сформировано %s · MS SQL Monitor %s (Go)</div>",
-		fmtDT(time.Now()), AppVersion))
+		fmtDT(time.Now()), FullVersion()))
 	b.WriteString("</div></body></html>")
 	out := b.String()
 

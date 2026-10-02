@@ -44,7 +44,7 @@ func main() {
 
 	switch {
 	case has("--version") || has("-v"):
-		fmt.Printf("MS SQL Monitor %s (Go)\n", AppVersion)
+		fmt.Printf("MS SQL Monitor %s (Go)\n", FullVersion())
 	case has("--selftest"):
 		os.Exit(selftest())
 	case has("--demo-report"):

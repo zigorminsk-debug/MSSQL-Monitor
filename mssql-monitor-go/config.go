@@ -12,10 +12,28 @@ import (
 )
 
 const (
-	AppName    = "MSSQLMonitor"
-	AppTitle   = "MS SQL Monitor — мониторинг и диагностика MS SQL Server"
-	AppVersion = "1.0.0"
+	AppName  = "MSSQLMonitor"
+	AppTitle = "MS SQL Monitor — мониторинг и диагностика MS SQL Server"
 )
+
+// AppVersion — базовая (семантическая) версия приложения.
+// BuildNumber — порядковый номер сборки; "dev" при локальной сборке
+// (go build без флагов) и конкретное число при сборке через GitHub Actions
+// (workflow .github/workflows/build-go-exe.yml подставляет его через
+// -ldflags "-X main.BuildNumber=N").
+var (
+	AppVersion  = "1.0.0"
+	BuildNumber = "dev"
+)
+
+// FullVersion — версия с номером сборки для отображения пользователю
+// (--version, HTML-отчёты, веб-интерфейс).
+func FullVersion() string {
+	if BuildNumber == "" || BuildNumber == "dev" {
+		return AppVersion
+	}
+	return AppVersion + " (сборка " + BuildNumber + ")"
+}
 
 // Settings — настройки программы.
 type Settings struct {

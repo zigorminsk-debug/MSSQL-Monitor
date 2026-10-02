@@ -1,0 +1,91 @@
+name: Build Go EXE
+
+# Собирает Windows-EXE версии MS SQL Monitor на Go (папка mssql-monitor-go)
+# при каждом push в main/master. Каждой сборке присваивается порядковый
+# номер (build-N): номер вычисляется по уже существующим git-тегам
+# build-*, затем создаётся новый тег, GitHub Release с этим номером и
+# к релизу прикладывается собранный MSSQLMonitor.exe. Номер сборки также
+# "зашивается" в сам exe через -ldflags -X (см. mssql-monitor-go/config.go,
+# переменная BuildNumber) — он виден в `MSSQLMonitor.exe --version` и внизу
+# HTML-отчётов.
+
+on:
+  push:
+    branches: [main, master]
+
+# Защита от гонки номеров, если push'и идут один за другим быстро.
+concurrency:
+  group: build-go-exe
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mssql-monitor-go
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine next build number
+        id: buildnum
+        run: |
+          last=$(git tag --list 'build-*' | sed -E 's/^build-([0-9]+)$/\1/' | sort -n | tail -1)
+          if [ -z "$last" ]; then
+            next=1
+          else
+            next=$((last + 1))
+          fi
+          echo "Следующий номер сборки: $next"
+          echo "number=$next" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: mssql-monitor-go/go.mod
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Native build + selftest
+        run: |
+          go build -o /tmp/mssqlmon .
+          /tmp/mssqlmon --selftest
+
+      - name: Build Windows EXE
+        env:
+          CGO_ENABLED: 0
+          GOOS: windows
+          GOARCH: amd64
+        run: |
+          go build -trimpath \
+            -ldflags "-s -w -H windowsgui -X main.BuildNumber=${{ steps.buildnum.outputs.number }}" \
+            -o MSSQLMonitor.exe .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MSSQLMonitor-build-${{ steps.buildnum.outputs.number }}
+          path: mssql-monitor-go/MSSQLMonitor.exe
+
+      - name: Tag this build
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "build-${{ steps.buildnum.outputs.number }}"
+          git push origin "build-${{ steps.buildnum.outputs.number }}"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ steps.buildnum.outputs.number }}
+          name: "MS SQL Monitor — сборка №${{ steps.buildnum.outputs.number }}"
+          body: |
+            Автоматическая сборка EXE (Go-версия) по коммиту ${{ github.sha }}.
+          files: mssql-monitor-go/MSSQLMonitor.exe

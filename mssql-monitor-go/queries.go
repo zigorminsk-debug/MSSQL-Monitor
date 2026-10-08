@@ -24,6 +24,7 @@ SELECT cpu_count, hyperthread_ratio,
        CAST(physical_memory_kb AS bigint)  AS physical_memory_kb,
        CAST(committed_memory_kb AS bigint) AS committed_kb,
        sql_memory_model_desc, sqlserver_start_time,
+       virtual_machine_type_desc, socket_count, cores_per_socket, numa_node_count,
        DATEDIFF(SECOND, sqlserver_start_time, SYSDATETIME()) AS uptime_sec
 FROM sys.dm_os_sys_info
 `
@@ -34,6 +35,8 @@ SELECT cpu_count, hyperthread_ratio,
        CAST(committed_memory_kb AS bigint)             AS committed_kb,
        CAST('' AS nvarchar(60))                        AS sql_memory_model_desc,
        sqlserver_start_time,
+       CAST('' AS nvarchar(60)) AS virtual_machine_type_desc,
+       socket_count, cores_per_socket, numa_node_count,
        DATEDIFF(SECOND, sqlserver_start_time, SYSDATETIME()) AS uptime_sec
 FROM sys.dm_os_sys_info
 `
@@ -146,7 +149,30 @@ ORDER BY SUM(s.total_worker_time) DESC
 const qDatabases = `
 SELECT name, recovery_model_desc, is_auto_shrink_on, is_auto_close_on,
        compatibility_level, page_verify_option_desc, log_reuse_wait_desc,
-       state_desc, user_access_desc, is_read_only
+       state_desc, user_access_desc, is_read_only,
+       collation_name, is_read_committed_snapshot_on, snapshot_isolation_state_desc,
+       target_recovery_time_in_seconds
+FROM sys.databases
+`
+
+// SQL Server 2016+ (13.x): Query Store.
+const qDatabases2016 = `
+SELECT name, recovery_model_desc, is_auto_shrink_on, is_auto_close_on,
+       compatibility_level, page_verify_option_desc, log_reuse_wait_desc,
+       state_desc, user_access_desc, is_read_only,
+       collation_name, is_read_committed_snapshot_on, snapshot_isolation_state_desc,
+       target_recovery_time_in_seconds, is_query_store_on
+FROM sys.databases
+`
+
+// SQL Server 2019+ (15.x): ускоренное восстановление (ADR).
+const qDatabases2019 = `
+SELECT name, recovery_model_desc, is_auto_shrink_on, is_auto_close_on,
+       compatibility_level, page_verify_option_desc, log_reuse_wait_desc,
+       state_desc, user_access_desc, is_read_only,
+       collation_name, is_read_committed_snapshot_on, snapshot_isolation_state_desc,
+       target_recovery_time_in_seconds, is_query_store_on,
+       is_accelerated_database_recovery_on
 FROM sys.databases
 `
 
@@ -159,6 +185,105 @@ FROM sys.master_files
 
 const qTempdbFiles = `
 SELECT COUNT(*) AS data_files FROM sys.master_files WHERE database_id = 2 AND type = 0
+`
+
+// Детали файлов tempdb: размеры и авторост (для проверки равного размера и преаллокации).
+const qTempdbDetail = `
+SELECT name, CAST(size * 8.0 / 1024 AS float) AS size_mb,
+       is_percent_growth, growth, physical_name
+FROM sys.master_files
+WHERE database_id = 2 AND type = 0
+`
+
+// Службы SQL Server: учётные записи, Instant File Initialization, состав компонентов.
+const qServices = `
+SELECT servicename, startup_type_desc, status_desc, service_account,
+       CAST(instant_file_initialization_enabled AS nvarchar(16)) AS instant_file_initialization_enabled
+FROM sys.dm_server_services
+`
+
+// Для версий до 2016 SP1 колонки instant_file_initialization_enabled нет.
+const qServicesOld = `
+SELECT servicename, startup_type_desc, status_desc, service_account,
+       CAST('' AS nvarchar(16)) AS instant_file_initialization_enabled
+FROM sys.dm_server_services
+`
+
+// Тома, на которых лежат файлы баз: свободное место (риск переполнения журнала/tempdb).
+const qVolumes = `
+SELECT DISTINCT vs.volume_mount_point, vs.logical_volume_name,
+       CAST(vs.total_bytes / 1073741824.0 AS float)     AS total_gb,
+       CAST(vs.available_bytes / 1073741824.0 AS float) AS free_gb
+FROM sys.master_files mf
+CROSS APPLY sys.dm_os_volume_stats(mf.database_id, mf.file_id) vs
+`
+
+// Аутентификация и привилегированные учётные записи (гигиена безопасности).
+const qSecurity = `
+SELECT CAST(SERVERPROPERTY('IsIntegratedSecurityOnly') AS int) AS windows_only,
+       (SELECT CAST(COUNT(*) AS int) FROM sys.server_principals
+         WHERE type = 'S' AND name <> 'sa' AND is_disabled = 0) AS sql_logins,
+       (SELECT CAST(COUNT(*) AS int) FROM sys.server_principals
+         WHERE type = 'S' AND IS_SRVROLEMEMBER('sysadmin', name) = 1 AND is_disabled = 0) AS sql_sysadmin,
+       (SELECT CAST(MAX(CASE WHEN name = 'sa' THEN is_disabled ELSE NULL END) AS int)
+          FROM sys.server_principals WHERE name = 'sa') AS sa_disabled,
+       (SELECT CAST(COUNT(*) AS int) FROM sys.server_principals
+         WHERE type = 'U' AND IS_SRVROLEMEMBER('sysadmin', name) = 1) AS win_sysadmin
+`
+
+// Логины с правами sysadmin (кроме sa) — для отчёта по безопасности.
+const qSysadminLogins = `
+SELECT TOP 30 name, type_desc, is_disabled
+FROM sys.server_principals
+WHERE IS_SRVROLEMEMBER('sysadmin', name) = 1
+  AND name <> 'sa' AND name NOT LIKE '##%' AND name NOT LIKE 'NT %'
+ORDER BY name
+`
+
+// Активная схема электропитания Windows (High performance = 8c5e7fda-...).
+// Требует прав на чтение реестра; при ошибке проверка просто пропускается.
+const qPowerPlan = `EXEC master..xp_instance_regread N'HKEY_LOCAL_MACHINE', ` +
+	`N'SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes', N'ActivePowerScheme'`
+
+// Сетевые протоколы экземпляра (TCP/IP должен быть включён; именованные каналы — как правило, нет).
+const qTcpEnabled = `EXEC master..xp_instance_regread N'HKEY_LOCAL_MACHINE', ` +
+	`N'SOFTWARE\Microsoft\MSSQLServer\MSSQLServer\SuperSocketNetLib\Tcp', N'Enabled'`
+
+const qNpEnabled = `EXEC master..xp_instance_regread N'HKEY_LOCAL_MACHINE', ` +
+	`N'SOFTWARE\Microsoft\MSSQLServer\MSSQLServer\SuperSocketNetLib\Np', N'Enabled'`
+
+// Куда пишутся резервные копии (сетевой ресурс или локальные диски сервера).
+const qBackupMedia = `
+SELECT d.name AS db_name, bmf.physical_device_name, bs.type AS backup_type,
+       bs.backup_finish_date, bs.encryptor_type
+FROM sys.databases d
+JOIN msdb.dbo.backupset bs        ON bs.database_name = d.name
+JOIN msdb.dbo.backupmediafamily bmf ON bmf.media_set_id = bs.media_set_id
+WHERE d.database_id > 4
+  AND bs.backup_finish_date = (SELECT MAX(bs2.backup_finish_date)
+                               FROM msdb.dbo.backupset bs2
+                               WHERE bs2.database_name = d.name)
+`
+
+// Для SQL Server 2012/2014 колонки encryptor_type нет.
+const qBackupMediaOld = `
+SELECT d.name AS db_name, bmf.physical_device_name, bs.type AS backup_type,
+       bs.backup_finish_date, CAST(NULL AS nvarchar(32)) AS encryptor_type
+FROM sys.databases d
+JOIN msdb.dbo.backupset bs        ON bs.database_name = d.name
+JOIN msdb.dbo.backupmediafamily bmf ON bmf.media_set_id = bs.media_set_id
+WHERE d.database_id > 4
+  AND bs.backup_finish_date = (SELECT MAX(bs2.backup_finish_date)
+                               FROM msdb.dbo.backupset bs2
+                               WHERE bs2.database_name = d.name)
+`
+
+// Состояние Query Store в текущей базе (2016+): включён ли и не перешёл ли в READ_ONLY.
+const qQueryStoreDB = `
+SELECT DB_NAME() AS db_name, actual_state_desc, readonly_reason, query_capture_mode_desc,
+       CAST(current_storage_size_mb AS bigint) AS current_mb,
+       CAST(max_storage_size_mb AS bigint)     AS max_mb
+FROM sys.database_query_store_options
 `
 
 var configNames = []string{
@@ -267,6 +392,16 @@ var queryDescriptions = map[string]string{
 	"Q_BACKUPS":          "резервные копии",
 	"Q_CACHED_PLANS":     "кэш планов",
 	"Q_TEMPDB_FILES":     "файлы tempdb",
+	"Q_TEMPDB_DETAIL":    "файлы tempdb (детали)",
+	"Q_SERVICES":         "службы SQL Server",
+	"Q_VOLUMES":          "тома с файлами баз",
+	"Q_SECURITY":         "аутентификация и привилегии",
+	"Q_SYSADMIN_LOGINS":  "логины sysadmin",
+	"Q_POWER_PLAN":       "схема электропитания",
+	"Q_TCP_ENABLED":      "протокол TCP/IP",
+	"Q_NP_ENABLED":       "именованные каналы",
+	"Q_BACKUP_MEDIA":     "размещение резервных копий",
+	"Q_QUERYSTORE_DB":    "Query Store",
 	"Q_FILE_CFG":         "настройки файлов",
 	"Q_MISSING_INDEX_DB": "недостающие индексы",
 	"Q_FRAG_DB":          "фрагментация индексов",

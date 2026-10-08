@@ -516,6 +516,18 @@ func ServeWeb(a *App, port int, host string, noBrowser bool) error {
 		writeJSON(w, map[string]any{"ok": true})
 	})
 
+	// Полное завершение программы: останавливает мониторинг, закрывает
+	// подключение к SQL Server, хранилище и журнал, затем завершает процесс.
+	mux.HandleFunc("/api/exit", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]any{"ok": true})
+		go func() {
+			time.Sleep(400 * time.Millisecond) // дать ответу дойти до браузера
+			logf("Получена команда «Выход»: мониторинг остановлен, программа завершается.")
+			ShutdownApp(a)
+			os.Exit(0)
+		}()
+	})
+
 	mux.HandleFunc("/api/report", func(w http.ResponseWriter, r *http.Request) {
 		var req struct{ Daily bool }
 		json.NewDecoder(r.Body).Decode(&req)
@@ -598,6 +610,30 @@ func ServeWeb(a *App, port int, host string, noBrowser bool) error {
 	}
 	srv := &http.Server{Handler: mux}
 	return srv.Serve(ln)
+}
+
+// ShutdownApp полностью прекращает работу программы: останавливает суточный
+// мониторинг и фоновые циклы, закрывает соединение с SQL Server, базу истории
+// и файл журнала. Используется кнопкой «Выход» в интерфейсе.
+func ShutdownApp(a *App) {
+	a.StopMonitoring()
+	a.mu.Lock()
+	if a.querier != nil {
+		a.querier.Close()
+		a.querier = nil
+	}
+	a.collector = nil
+	st := a.store
+	a.mu.Unlock()
+	if st != nil {
+		st.Close()
+	}
+	logMu.Lock()
+	if logFile != nil {
+		logFile.Close()
+		logFile = nil
+	}
+	logMu.Unlock()
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

@@ -31,6 +31,10 @@ button:hover:not(:disabled){border-color:var(--acc);color:var(--acc)}
 button:disabled{opacity:.45;cursor:not-allowed}
 button.primary{background:var(--acc);border-color:var(--acc);color:#fff}
 button.primary:hover:not(:disabled){background:var(--acc2);color:#fff}
+button.exit{background:rgba(220,38,38,.18);border-color:rgba(248,113,113,.55);color:#fff;
+ padding:6px 14px;border-radius:20px;font-size:12.5px}
+button.exit:hover:not(:disabled){background:rgba(220,38,38,.42);border-color:#fca5a5;color:#fff}
+.exitnote{background:#fef2f2;border:1px solid #fecaca;color:#991b1b}
 
 .cards{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin:12px 0}
 @media(max-width:980px){.cards{grid-template-columns:repeat(3,1fr)}}

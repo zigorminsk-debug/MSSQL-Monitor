@@ -196,11 +196,32 @@ function render(d) {
 }
 
 // ------------------------------------------------------------------ действия
+let pollTimer = null;
+let exited = false;
+
 async function refresh() {
+  if (exited) return;
   try {
     const r = await fetch('/api/state');
     if (r.ok) render(await r.json());
   } catch (e) { /* сервер перезапускается */ }
+}
+
+function showExited() {
+  exited = true;
+  if (pollTimer) clearInterval(pollTimer);
+  $('chip-conn').textContent = '● не подключено';
+  $('chip-conn').className = 'chip off';
+  $('chip-mon').textContent = '○ программа завершена';
+  $('chip-mon').className = 'chip off';
+  $('btn-exit').disabled = true;
+  document.querySelectorAll('.controls button').forEach(b => b.disabled = true);
+  const note = document.createElement('div');
+  note.className = 'card hint exitnote';
+  note.innerHTML = '<b>Мониторинг остановлен, программа завершена.</b><br>' +
+    'Соединение с SQL Server закрыто, фоновые процессы остановлены, история сохранена.<br>' +
+    'Эту вкладку браузера можно закрыть. Для нового запуска откройте программу заново.';
+  document.querySelector('.wrap').prepend(note);
 }
 
 function connPayload() {
@@ -246,6 +267,15 @@ function bind() {
   };
   $('btn-stop').onclick = async () => { await api('/api/monitor/stop', {}); refresh(); };
 
+  $('btn-exit').onclick = async () => {
+    if (!confirm('Завершить программу?\n\nБудут остановлены суточный мониторинг и все фоновые процессы,\n' +
+                 'закрыто подключение к SQL Server, сохранена история.\nПрограмма выключится — окно браузера можно закрыть.')) return;
+    toast('Завершение работы…');
+    await api('/api/exit', {});
+    showExited();
+    toast('Программа завершена.', 'ok');
+  };
+
   $('btn-snapshot').onclick = () => {
     toast('Формирование отчёта (полный снимок — это до 1–2 минут)…');
     api('/api/report', { daily: false }).then(r => { if (!r.ok) toast(r.error, 'err'); });
@@ -290,4 +320,4 @@ function bind() {
 
 bind();
 refresh();
-setInterval(refresh, 2000);
+pollTimer = setInterval(refresh, 2000);

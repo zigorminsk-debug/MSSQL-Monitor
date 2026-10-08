@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // CPUInfo — загрузка ЦП, %.
@@ -119,25 +121,33 @@ type FileStat struct {
 // Snapshot — полный снимок (лёгкий + тяжёлые запросы).
 type Snapshot struct {
 	Sample
-	Instance    map[string]string
-	SysInfo     map[string]any
-	OSMem       map[string]any
-	Config      map[string]string
-	Databases   []map[string]any
-	Files       []FileStat
-	FilesMode   string
-	PerDBMem    []map[string]any // память (буферный кэш) по базам
-	PerDBCPU    []map[string]any // накопленный ЦП по базам (кэш планов)
-	TempdbFiles int
-	FileCfg     []map[string]any
-	Backups     []map[string]any
-	CachedPlans []map[string]any
-	TopQueries  []map[string]any
-	MissingIdx  []map[string]any
-	Frag        []map[string]any
-	StaleStats  []map[string]any
-	VLF         []map[string]any
-	Errors      []string
+	Instance     map[string]string
+	SysInfo      map[string]any
+	OSMem        map[string]any
+	Config       map[string]string
+	Databases    []map[string]any
+	Files        []FileStat
+	FilesMode    string
+	PerDBMem     []map[string]any // память (буферный кэш) по базам
+	PerDBCPU     []map[string]any // накопленный ЦП по базам (кэш планов)
+	TempdbFiles  int
+	TempdbDetail []map[string]any // файлы tempdb: размеры, авторост
+	FileCfg      []map[string]any
+	Backups      []map[string]any
+	BackupMedia  []map[string]any // последние копии: куда пишутся, шифруются ли
+	CachedPlans  []map[string]any
+	TopQueries   []map[string]any
+	MissingIdx   []map[string]any
+	Frag         []map[string]any
+	StaleStats   []map[string]any
+	VLF          []map[string]any
+	QueryStore   []map[string]any // состояние Query Store по базам (2016+)
+	Services     []map[string]any // службы: учётка, Instant File Initialization
+	Volumes      []map[string]any // тома с файлами: свободное место
+	Security     map[string]any   // аутентификация, sa, sysadmin-логины
+	SysLogins    []map[string]any // привилегированные логины
+	NetConfig    map[string]string
+	Errors       []string
 }
 
 // ---------------------------------------------------------------------------
@@ -240,6 +250,36 @@ func (c *Collector) try(ctx context.Context, key, sql string) []map[string]any {
 		return nil
 	}
 	return rows
+}
+
+// regRead читает одно значение из реестра через xp_instance_regread.
+// Без прав доступа/неподдерживаемой версии возвращает пустую строку — проверка пропускается.
+func (c *Collector) regRead(ctx context.Context, key, sql string) string {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	rows, err := c.q.Query(ctx, sql)
+	if err != nil || len(rows) == 0 {
+		return ""
+	}
+	for _, v := range rows[0] {
+		if s := strings.TrimSpace(sstr(v)); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// productMajor выделяет основной номер версии SQL Server (15 = SQL Server 2019).
+func productMajor(version string) int {
+	parts := strings.SplitN(strings.TrimSpace(version), ".", 2)
+	if len(parts) == 0 {
+		return 0
+	}
+	n, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 func shortErr(err error) string {
@@ -510,6 +550,10 @@ func truncStr(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
+	// не разрезаем многобайтовые символы UTF-8: иначе в HTML попадает битый текст
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
 	return s[:n]
 }
 
@@ -532,13 +576,18 @@ func (c *Collector) FullSnapshot(ctx context.Context) *Snapshot {
 		Config: map[string]string{}, Databases: []map[string]any{}, Files: []FileStat{},
 		FileCfg: []map[string]any{}, Backups: []map[string]any{}, CachedPlans: []map[string]any{},
 		TopQueries: []map[string]any{}, MissingIdx: []map[string]any{}, Frag: []map[string]any{},
-		StaleStats: []map[string]any{}, VLF: []map[string]any{}}
+		StaleStats: []map[string]any{}, VLF: []map[string]any{},
+		TempdbDetail: []map[string]any{}, BackupMedia: []map[string]any{},
+		QueryStore: []map[string]any{}, Services: []map[string]any{}, Volumes: []map[string]any{},
+		Security: map[string]any{}, SysLogins: []map[string]any{}, NetConfig: map[string]string{}}
 
 	if rows := c.try(ctx, "Q_INSTANCE", qInstance); len(rows) > 0 {
 		for k, v := range rows[0] {
 			snap.Instance[k] = sstr(v)
 		}
 	}
+	// Номер основной версии нужен для выбора совместимых запросов (Query Store, ADR, шифрование копий).
+	major := productMajor(snap.Instance["product_version"])
 	sysRows := c.try(ctx, "Q_SYS_INFO", qSysInfo)
 	if sysRows == nil {
 		sysRows = c.try(ctx, "Q_SYS_INFO", qSysInfoOld)
@@ -549,10 +598,14 @@ func (c *Collector) FullSnapshot(ctx context.Context) *Snapshot {
 	if rows := c.try(ctx, "Q_OS_MEMORY", qOSMemory); len(rows) > 0 {
 		snap.OSMem = rows[0]
 	}
-	snap.Databases = c.try(ctx, "Q_DATABASES", qDatabases)
-	if snap.Databases == nil {
-		snap.Databases = []map[string]any{}
+	// Расширенный список баз: версии различаются набором колонок, поэтому идём от старшей к базовой.
+	dbRows := c.try(ctx, "Q_DATABASES", qDatabases)
+	if major >= 15 {
+		dbRows = c.try(ctx, "Q_DATABASES", qDatabases2019)
+	} else if major >= 13 {
+		dbRows = c.try(ctx, "Q_DATABASES", qDatabases2016)
 	}
+	snap.Databases = orEmpty(dbRows)
 	for _, r := range c.try(ctx, "Q_CONFIG", qConfig) {
 		snap.Config[sstr(r["name"])] = sstr(r["value_in_use"])
 	}
@@ -562,6 +615,48 @@ func (c *Collector) FullSnapshot(ctx context.Context) *Snapshot {
 	snap.TopQueries = orEmpty(c.try(ctx, "Q_TOP_QUERIES", qTopQueries))
 	if rows := c.try(ctx, "Q_TEMPDB_FILES", qTempdbFiles); len(rows) > 0 {
 		snap.TempdbFiles = int(toI(rows[0]["data_files"]))
+	}
+	snap.TempdbDetail = orEmpty(c.try(ctx, "Q_TEMPDB_DETAIL", qTempdbDetail))
+
+	// --- проверки по методике настройки (диски, службы, безопасность, копии) ---
+	svc := c.try(ctx, "Q_SERVICES", qServices)
+	if svc == nil || (len(svc) > 0 && sstr(svc[0]["instant_file_initialization_enabled"]) == "") {
+		if old := c.try(ctx, "Q_SERVICES", qServicesOld); old != nil {
+			svc = old
+		}
+	}
+	snap.Services = orEmpty(svc)
+	snap.Volumes = orEmpty(c.try(ctx, "Q_VOLUMES", qVolumes))
+	if rows := c.try(ctx, "Q_SECURITY", qSecurity); len(rows) > 0 {
+		snap.Security = rows[0]
+	}
+	snap.SysLogins = orEmpty(c.try(ctx, "Q_SYSADMIN_LOGINS", qSysadminLogins))
+	snap.BackupMedia = orEmpty(c.try(ctx, "Q_BACKUP_MEDIA", qBackupMedia))
+	if len(snap.BackupMedia) == 0 {
+		snap.BackupMedia = orEmpty(c.try(ctx, "Q_BACKUP_MEDIA", qBackupMediaOld))
+	}
+	// Реестровые проверки — «best effort»: без sysadmin они просто не дадут данных.
+	if v := c.regRead(ctx, "Q_POWER_PLAN", qPowerPlan); v != "" {
+		snap.NetConfig["power_plan"] = strings.ToUpper(v)
+	}
+	if v := c.regRead(ctx, "Q_TCP_ENABLED", qTcpEnabled); v != "" {
+		snap.NetConfig["tcp_enabled"] = v
+	}
+	if v := c.regRead(ctx, "Q_NP_ENABLED", qNpEnabled); v != "" {
+		snap.NetConfig["named_pipes_enabled"] = v
+	}
+	// Query Store: состояние по каждой рабочей базе (SQL Server 2016+).
+	if major >= 13 {
+		for _, db := range snap.Databases {
+			name := sstr(db["name"])
+			if name == "master" || name == "model" || name == "msdb" || name == "tempdb" ||
+				sstr(db["state_desc"]) != "ONLINE" || bval(db["is_read_only"]) {
+				continue
+			}
+			if rows := c.try(ctx, "Q_QUERYSTORE_DB", forDB(name, qQueryStoreDB)); len(rows) > 0 {
+				snap.QueryStore = append(snap.QueryStore, rows[0])
+			}
+		}
 	}
 
 	// файлы: дельты с прошлого полного снимка или средние с запуска сервера

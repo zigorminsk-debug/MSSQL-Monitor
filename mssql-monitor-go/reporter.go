@@ -82,7 +82,7 @@ details pre{background:#0f172a;color:#e2e8f0;border-radius:8px;padding:12px 14px
 `
 
 var sevClass = map[string]string{"critical": "c-crit", "warning": "c-warn", "info": "c-info", "ok": "c-ok"}
-var statusIcon = map[string]string{"bad": "⛔", "warn": "⚠️", "ok": "✅"}
+var statusIcon = map[string]string{"bad": "⛔", "warn": "⚠️", "ok": "✅", "manual": "🔎"}
 
 func badgeHTML(sev string) string {
 	return fmt.Sprintf("<span class='badge %s'>%s</span>", sevClass[sev], sevRu[sev])
@@ -571,9 +571,16 @@ func BuildReport(snap *Snapshot, hist *History, an *Analysis, s Settings, outPat
 		}
 		avgConn /= float64(len(samples))
 	}
+	physCores := fmtNum(float64(toI(snap.SysInfo["cpu_count"]) / ht))
+	if sock, cps := toI(snap.SysInfo["socket_count"]), toI(snap.SysInfo["cores_per_socket"]); sock > 0 && cps > 0 {
+		physCores = fmt.Sprintf("%d сокета × %d ядер", sock, cps)
+		if numa := toI(snap.SysInfo["numa_node_count"]); numa > 0 {
+			physCores += fmt.Sprintf(", NUMA-узлов: %d", numa)
+		}
+	}
 	cpuRows := [][2]string{
 		{"Логических процессоров", fmtNum(toF(snap.SysInfo["cpu_count"]))},
-		{"Физических процессоров (сокетов)", fmtNum(float64(toI(snap.SysInfo["cpu_count"]) / ht))},
+		{"Физических ядер (топология)", physCores},
 		{"ЦП SQL: сейчас / среднее / макс", fmt.Sprintf("%s%% / %s%% / %s%%",
 			fmtNum(snap.CPU.SQL), fmtNum(st.CPUAvg), fmtNum(st.CPUMax))},
 		{"Подключений (сейчас / среднее)", fmt.Sprintf("%s / %s", fmtNumD(p.Connections, "—"), fmtNum(avgConn))},
@@ -697,6 +704,22 @@ func BuildReport(snap *Snapshot, hist *History, an *Analysis, s Settings, outPat
 		cfgS.WriteString("<h3>Аудит конфигурации экземпляра</h3><table><tr><th>Параметр</th>" +
 			"<th class='r'>Текущее</th><th class='r'>Рекомендуется</th><th>Статус</th></tr>" + rows + "</table>")
 	}
+	if len(an.Checklist) > 0 {
+		rows := ""
+		for _, c := range an.Checklist {
+			rows += fmt.Sprintf("<tr><td>%s</td><td>%s</td><td>%s</td></tr>",
+				esc(c.Title), statusIcon[c.Status]+" "+map[string]string{
+					"ok": "автопроверка пройдена", "warn": "требует внимания",
+					"bad": "не выполнено", "manual": "проверить вручную",
+				}[c.Status], esc(c.Note))
+		}
+		cfgS.WriteString("<h3>Чек-лист настройки (методика MS SQL Server под 1С)</h3>" +
+			"<p class='mono'>Автоматические проверки по параметрам сервера и то, что нужно проверить руками " +
+			"на уровне ОС, гипервизора, сети и процессов (по материалам разбора «Настройка MS SQL Server под 1С» " +
+			"на Habr — планирование/развёртывание и эксплуатация).</p>" +
+			"<table><tr><th style='width:34%'>Пункт</th><th style='width:20%'>Статус</th><th>Что проверить</th></tr>" +
+			rows + "</table>")
+	}
 	if len(snap.Databases) > 0 {
 		backups := map[string]map[string]any{}
 		for _, bk := range snap.Backups {
@@ -784,6 +807,17 @@ sys.dm_db_missing_index_* (недостающие индексы), sys.dm_db_ind
 и чтение msdb.</p>
 <p><b>Суточный мониторинг.</b> Программа опрашивает сервер каждые 30 секунд (настраивается) и хранит
 историю до 7 дней; отчёт можно сформировать в любой момент — графики строятся за последние 24 часа.</p>
+<p><b>Методика настройки.</b> Расширенные проверки (коллация, Instant File Initialization, план
+электропитания, разнесение файлов по томам, свободное место, tempdb, непрямой checkpoint, RCSI/ADR,
+Query Store, размещение и шифрование копий, режим аутентификации и учётные записи служб) построены по
+разбору «Настройка MS SQL Server под 1С: планирование и развёртывание» (части 1–2). Раздел 10 отчёта
+содержит аудит параметров и чек-лист: часть пунктов проверяется автоматически, часть (антивирус,
+кластер 64 КБ, DiskSpd-эталон, правила сети, настройки гипервизора, ответственный за мониторинг)
+требует ручной проверки.</p>
+<p><b>Важно про ожидания.</b> Тип ожидания — не ошибка, а показатель: ожидания возникают всегда.
+Смотрите доли и динамику свежим периодом, а интерпретируйте их в контексте профиля нагрузки
+(тяжёлая ERP против куста бухгалтерских баз): сначала ожидания и метрики, потом решение о настройке,
+коде или железе.</p>
 </div>`
 	b.WriteString(sectionHTML("11", "Методика и ограничения", "method", method))
 

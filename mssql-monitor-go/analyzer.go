@@ -202,9 +202,20 @@ type Analysis struct {
 	Summary     string     `json:"summary"`
 	WaitByCat   []CatShare `json:"wait_by_cat"`
 	WaitTop     []WaitTop  `json:"wait_top"`
-	ConfigAudit []AuditRow `json:"config_audit"`
-	Stats       Stats      `json:"-"`
+	ConfigAudit []AuditRow     `json:"config_audit"`
+	Checklist   []ChecklistRow `json:"checklist"`
+	Stats       Stats          `json:"-"`
 }
+
+// ChecklistRow — пункт чек-листа настройки: что проверено/что проверить вручную.
+type ChecklistRow struct {
+	Title  string `json:"title"`
+	Status string `json:"status"` // ok | warn | bad | manual
+	Note   string `json:"note"`
+}
+
+// addFn — добавление рекомендации (замыкание внутри Analyze).
+type addFn func(sev, area, title, problem, rec, script string)
 
 var sevRu = map[string]string{"critical": "Критично", "warning": "Важно", "info": "Рекомендуется", "ok": "Норма"}
 var sevWeight = map[string]float64{"critical": 12, "warning": 5, "info": 1.5, "ok": 0}
@@ -327,7 +338,7 @@ func Analyze(snap *Snapshot, hist *History) *Analysis {
 	findings := &an.Findings
 	audit := &an.ConfigAudit
 
-	add := func(sev, area, title, problem, rec, script string, _ ...string) {
+	add := func(sev, area, title, problem, rec, script string) {
 		*findings = append(*findings, Finding{sev, area, title, problem, rec, script})
 	}
 	cfgInt := func(name string) (int64, bool) {
@@ -609,7 +620,7 @@ func Analyze(snap *Snapshot, hist *History) *Analysis {
 		add("warning", "Базы данных", "Слишком много VLF в журнале транзакций",
 			strings.Join(bigVLF, "; "),
 			"Больше 1000 виртуальных файлов журнала замедляют восстановление и операции с журналом (crash recovery, log reader).",
-			"Уменьшите журнал до минимума и заново увеличьте крупными порциями (ALTER DATABASE ... MODIFY FILE (SIZE=...)).", "")
+			"Уменьшите журнал до минимума и заново увеличьте крупными порциями (ALTER DATABASE ... MODIFY FILE (SIZE=...)).")
 	}
 
 	// ------------------------------------------------------------- память
@@ -750,8 +761,11 @@ func Analyze(snap *Snapshot, hist *History) *Analysis {
 			"Рекомендуется наблюдать за сервером не менее суток для достоверных выводов.", "")
 	}
 
+	// --------------------------- расширенный аудит по методике настройки под 1С
+	extendedAudit(snap, an, add)
+
 	// ------------------------------------------------------- причины замедлений
-	an.Causes = buildCauses(st, snap)
+	an.Causes = buildCauses(st, snap, an)
 	// ------------------------------------------------------- health score
 	cnt := map[string]int{}
 	for _, f := range an.Findings {
@@ -842,7 +856,7 @@ func fmtDT(t time.Time) string {
 }
 
 // buildCauses формирует раздел «Причины замедления работы».
-func buildCauses(st Stats, snap *Snapshot) []Cause {
+func buildCauses(st Stats, snap *Snapshot, an *Analysis) []Cause {
 	var causes []Cause
 	pct := st.CatPct
 
@@ -872,8 +886,12 @@ func buildCauses(st Stats, snap *Snapshot) []Cause {
 				toF(snap.TopQueries[0]["avg_cpu_ms"]), sstr(snap.TopQueries[0]["db_name"])))
 		}
 		fixes := []string{"Оптимизировать топ-запросы по ЦП (раздел «Топ запросов»)."}
-		if topWaitMS("CXPACKET") > 0 {
-			fixes = append(fixes, "Настроить MAXDOP ≤ 8 и cost threshold for parallelism 25–50.")
+		if topWaitMS("CXPACKET") > 0 || topWaitMS("CXCONSUMER") > 0 {
+			fixes = append(fixes, "Настроить cost threshold for parallelism (25–50) и MAXDOP осознанно: "+
+				"CXPACKET — не ошибка, а показатель параллельных запросов; с SQL Server 2016 SP2 "+
+				"безвредная часть вынесена в CXCONSUMER. Выключение параллелизма целиком (MAXDOP = 1) "+
+				"лишает тяжёлые отчёты ускорения — подбирайте значения по наблюдениям. "+
+				"Ориентир: ERP с тяжёлыми отчётами выигрывает от параллелизма, кусту бухгалтерских баз он нужен реже.")
 		}
 		if st.CompileRatio > 0.15 {
 			fixes = append(fixes, "Включить optimize for ad hoc workloads, параметризовать запросы.")
@@ -940,12 +958,24 @@ func buildCauses(st Stats, snap *Snapshot) []Cause {
 		if pct["locks"] > 0 {
 			ev = append(ev, fmt.Sprintf("Доля ожиданий блокировок (LCK_M_*): %.0f%%", pct["locks"]))
 		}
+		fixes := []string{"Найти head-blocker в разделе «Блокировки» и оптимизировать его транзакцию.",
+			"Сократить длительность транзакций в приложении (коммитить чаще).",
+			"Оптимизировать запросы-жертвы (индексы)."}
+		rcsiOff, legacyCompat := rcsiState(snap)
+		if len(rcsiOff) > 0 {
+			fixes = append(fixes, "Включить READ_COMMITTED_SNAPSHOT (RCSI) на OLTP-базах: читатели перестанут ждать "+
+				"писателей. Для баз 1С в управляемом режиме блокировок платформа включает RCSI сама.")
+		}
+		if len(legacyCompat) > 0 {
+			fixes = append(fixes, "Внимание: у баз 1С со старым режимом совместимости (автоматический/смешанный "+
+				"режим блокировок) транзакции идут на Repeatable Read/Serializable — RCSI на них не действует. "+
+				"Сначала перевод конфигурации на управляемый режим блокировок (БлокировкаДанных в коде), "+
+				"потом уровень изоляции, и только затем флаг RCSI.")
+		}
 		causes = append(causes, Cause{"warning", "Блокировки между транзакциями", ev,
-			"Одни транзакции удерживают блокировки, другие ждут. Обычно виновата длинная транзакция (head blocker) или сканирования, захватывающие множество строк.",
-			[]string{"Найти head-blocker в разделе «Блокировки» и оптимизировать его транзакцию.",
-				"Сократить длительность транзакций в приложении (коммитить чаще).",
-				"Рассмотреть READ_COMMITTED_SNAPSHOT для OLTP-баз.",
-				"Оптимизировать запросы-жертвы (индексы)."}})
+			"Одни транзакции удерживают блокировки, другие ждут. Обычно виновата длинная транзакция (head blocker) или сканирования, захватывающие множество строк. "+
+				"Море LCK_M_* в ожиданиях — признак конкуренции за строки, а не «ошибка»: смотрите режим блокировок конфигурации 1С и длину транзакций.",
+			fixes})
 	}
 
 	// 5. Гранты памяти
@@ -963,10 +993,13 @@ func buildCauses(st Stats, snap *Snapshot) []Cause {
 	if pct["network"] > 15 {
 		causes = append(causes, Cause{"info", "Клиентские приложения забирают данные медленно",
 			[]string{fmt.Sprintf("Доля ASYNC_NETWORK_IO: %.0f%%", pct["network"])},
-			"Сервер простаивает, ожидая, пока приложение прочитает результат запроса.",
+			"Сервер простаивает, ожидая, пока приложение прочитает результат запроса. Важный нюанс: "+
+				"пока клиент не подтвердил приём результата, SQL Server не снимает блокировки — «жадная» "+
+				"выборка в коде 1С превращается в блокировки для остальных пользователей.",
 			[]string{"Буферизовать чтение результатов на клиенте.",
-				"Уменьшать объём выборок (TOP/WHERE/пагинация).",
-				"Проверить сеть между приложением и SQL Server."}})
+				"Уменьшать объём выборок (TOP/WHERE/пагинация), не читать лишние колонки и строки.",
+				"Проверить сеть между сервером приложений 1С и SQL Server (редкая причина).",
+				"Искать «жадные» запросы в коде 1С и в настройках сервера приложений."}})
 	}
 
 	// 7. Бэкапы в рабочие часы

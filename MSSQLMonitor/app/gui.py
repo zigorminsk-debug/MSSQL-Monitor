@@ -45,6 +45,7 @@ class MonitorApp:
         self.collect_lock = threading.Lock()
         self.sampler_thread = None
         self.daily_thread = None
+        self.report_thread = None
         self._consecutive_errors = 0
         self._report_counter = 0
 
@@ -201,6 +202,8 @@ class MonitorApp:
         self.sb_interval.pack(side='left')
         self.b_settings = ttk.Button(ctrl, text='⚙ Настройки', command=self._open_settings)
         self.b_settings.pack(side='right')
+        self.b_exit = ttk.Button(ctrl, text='⏻ Выход', command=self._exit_app)
+        self.b_exit.pack(side='right', padx=6)
 
     # ---------------------------------------------------------------- recs
     def _build_recs_tab(self):
@@ -449,8 +452,9 @@ class MonitorApp:
         self._set_status('Формирование отчёта (полный снимок — это до 1–2 минут)…')
         self.b_snapshot.configure(state='disabled')
         self.b_daily.configure(state='disabled')
-        threading.Thread(target=self._report_worker, args=(out, daily, silent),
-                         daemon=True).start()
+        self.report_thread = threading.Thread(target=self._report_worker,
+                                              args=(out, daily, silent), daemon=True)
+        self.report_thread.start()
 
     def _report_worker(self, out, daily, silent):
         try:
@@ -678,8 +682,30 @@ class MonitorApp:
         dlg.geometry('+%d+%d' % (self.root.winfo_x() + 200, self.root.winfo_y() + 150))
 
     # ================================================================ прочее
-    def _on_close(self):
+    def _exit_app(self):
+        """Кнопка «Выход»: полностью завершает программу и процессы мониторинга."""
+        if not messagebox.askyesno(
+                'Выход',
+                'Завершить программу?\n\n'
+                'Будут остановлены суточный мониторинг и все фоновые процессы,\n'
+                'закрыто подключение к SQL Server, история сохранена.'):
+            return
+        self.log('Команда «Выход»: остановка мониторинга и завершение программы.')
+        self._shutdown()
+
+    def _shutdown(self):
+        """Полное завершение: остановка потоков и закрытие всех ресурсов."""
         self.stop_evt.set()
+        self._set_status('Завершение работы: остановка процессов мониторинга…')
+        try:
+            self.b_start.configure(state='disabled')
+            self.b_stop.configure(state='disabled')
+            self.root.update_idletasks()
+        except Exception:
+            pass
+        for t in (self.sampler_thread, self.daily_thread, self.report_thread):
+            if t is not None and t.is_alive() and t is not threading.current_thread():
+                t.join(timeout=2.0)          # потоки daemon — завершатся вместе с процессом
         try:
             self.store.close()
         except Exception:
@@ -690,6 +716,9 @@ class MonitorApp:
             except Exception:
                 pass
         self.root.destroy()
+
+    def _on_close(self):
+        self._shutdown()
 
     def run(self):
         self.log('MS SQL Monitor %s запущен. Данные: %s' % (APP_VERSION, data_dir()))

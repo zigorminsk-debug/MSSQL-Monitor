@@ -335,23 +335,38 @@ func (e *DemoEngine) Query(_ context.Context, sql string) ([]map[string]any, err
 			{"name": "master", "recovery_model_desc": "SIMPLE", "is_auto_shrink_on": int64(0),
 				"is_auto_close_on": int64(0), "compatibility_level": int64(150),
 				"page_verify_option_desc": "CHECKSUM", "log_reuse_wait_desc": "NOTHING",
-				"state_desc": "ONLINE", "user_access_desc": "MULTI_USER", "is_read_only": int64(0)},
+				"state_desc": "ONLINE", "user_access_desc": "MULTI_USER", "is_read_only": int64(0),
+				"collation_name": "Cyrillic_General_CI_AS", "is_read_committed_snapshot_on": int64(0),
+				"snapshot_isolation_state_desc": "OFF", "target_recovery_time_in_seconds": int64(60),
+				"is_query_store_on": int64(0), "is_accelerated_database_recovery_on": int64(0)},
 			{"name": "SalesDb", "recovery_model_desc": "FULL", "is_auto_shrink_on": int64(0),
 				"is_auto_close_on": int64(0), "compatibility_level": int64(150),
 				"page_verify_option_desc": "CHECKSUM", "log_reuse_wait_desc": "LOG_BACKUP",
-				"state_desc": "ONLINE", "user_access_desc": "MULTI_USER", "is_read_only": int64(0)},
+				"state_desc": "ONLINE", "user_access_desc": "MULTI_USER", "is_read_only": int64(0),
+				"collation_name": "Cyrillic_General_CI_AS", "is_read_committed_snapshot_on": int64(0),
+				"snapshot_isolation_state_desc": "OFF", "target_recovery_time_in_seconds": int64(0),
+				"is_query_store_on": int64(1), "is_accelerated_database_recovery_on": int64(0)},
 			{"name": "ReportsDb", "recovery_model_desc": "SIMPLE", "is_auto_shrink_on": int64(1),
 				"is_auto_close_on": int64(0), "compatibility_level": int64(110),
 				"page_verify_option_desc": "CHECKSUM", "log_reuse_wait_desc": "NOTHING",
-				"state_desc": "ONLINE", "user_access_desc": "MULTI_USER", "is_read_only": int64(0)},
+				"state_desc": "ONLINE", "user_access_desc": "MULTI_USER", "is_read_only": int64(0),
+				"collation_name": "Cyrillic_General_CI_AS", "is_read_committed_snapshot_on": int64(0),
+				"snapshot_isolation_state_desc": "OFF", "target_recovery_time_in_seconds": int64(0),
+				"is_query_store_on": int64(1), "is_accelerated_database_recovery_on": int64(0)},
 			{"name": "StatsDb", "recovery_model_desc": "FULL", "is_auto_shrink_on": int64(0),
 				"is_auto_close_on": int64(1), "compatibility_level": int64(150),
 				"page_verify_option_desc": "CHECKSUM", "log_reuse_wait_desc": "NOTHING",
-				"state_desc": "ONLINE", "user_access_desc": "MULTI_USER", "is_read_only": int64(0)},
+				"state_desc": "ONLINE", "user_access_desc": "MULTI_USER", "is_read_only": int64(0),
+				"collation_name": "Cyrillic_General_CI_AS", "is_read_committed_snapshot_on": int64(0),
+				"snapshot_isolation_state_desc": "OFF", "target_recovery_time_in_seconds": int64(0),
+				"is_query_store_on": int64(0), "is_accelerated_database_recovery_on": int64(0)},
 			{"name": "Legacy2014", "recovery_model_desc": "FULL", "is_auto_shrink_on": int64(0),
 				"is_auto_close_on": int64(0), "compatibility_level": int64(100),
 				"page_verify_option_desc": "NONE", "log_reuse_wait_desc": "NOTHING",
-				"state_desc": "ONLINE", "user_access_desc": "MULTI_USER", "is_read_only": int64(1)},
+				"state_desc": "ONLINE", "user_access_desc": "MULTI_USER", "is_read_only": int64(1),
+				"collation_name": "Cyrillic_General_CI_AS", "is_read_committed_snapshot_on": int64(0),
+				"snapshot_isolation_state_desc": "OFF", "target_recovery_time_in_seconds": int64(0),
+				"is_query_store_on": int64(0), "is_accelerated_database_recovery_on": int64(0)},
 		}, nil
 
 	case strings.Contains(sql, "COUNT(*) AS data_files"):
@@ -373,6 +388,12 @@ func (e *DemoEngine) Query(_ context.Context, sql string) ([]map[string]any, err
 			{"name": "nested triggers", "value_in_use": "1"},
 		}, nil
 
+	case strings.Contains(sql, "IsIntegratedSecurityOnly"):
+		return []map[string]any{{
+			"windows_only": int64(0), "sql_logins": int64(4), "sql_sysadmin": int64(2),
+			"sa_disabled": int64(0), "win_sysadmin": int64(2),
+		}}, nil
+
 	case strings.Contains(sql, "SERVERPROPERTY"):
 		return []map[string]any{{
 			"machine_name": "SQLSRV-PROD-01", "server_name": "SQLSRV-PROD-01\\PROD",
@@ -383,11 +404,13 @@ func (e *DemoEngine) Query(_ context.Context, sql string) ([]map[string]any, err
 
 	case strings.Contains(sql, "dm_os_sys_info"):
 		return []map[string]any{{
-			"cpu_count": int64(16), "hyperthread_ratio": int64(2),
+			"cpu_count": int64(16), "hyperthread_ratio": int64(1),
 			"physical_memory_kb": int64(67108864), "committed_kb": int64(58000000),
 			"sql_memory_model_desc": "CONVENTIONAL",
-			"sqlserver_start_time":  time.Now().AddDate(0, 0, -45),
-			"uptime_sec":            int64(45 * 86400),
+			"virtual_machine_type_desc": "HYPERVISOR",
+			"socket_count":              int64(2), "cores_per_socket": int64(8), "numa_node_count": int64(2),
+			"sqlserver_start_time": time.Now().AddDate(0, 0, -45),
+			"uptime_sec":           int64(45 * 86400),
 		}}, nil
 
 	case strings.Contains(sql, "dm_os_sys_memory"):
@@ -459,6 +482,58 @@ func (e *DemoEngine) Query(_ context.Context, sql string) ([]map[string]any, err
 				"query_text": "EXEC dbo.usp_CalcOrderTotals @FromDate = @p0, @ToDate = @p1"},
 		}, nil
 
+	// --- проверки по методике настройки (диски, службы, безопасность, копии) ---
+
+	case strings.Contains(sql, "dm_server_services"):
+		return []map[string]any{
+			{"servicename": "SQL Server (PROD)", "startup_type_desc": "Automatic",
+				"status_desc": "Running", "service_account": "NT AUTHORITY\\SYSTEM",
+				"instant_file_initialization_enabled": "NO"},
+			{"servicename": "SQL Server Agent (PROD)", "startup_type_desc": "Automatic",
+				"status_desc": "Running", "service_account": "NT AUTHORITY\\SYSTEM",
+				"instant_file_initialization_enabled": "NO"},
+		}, nil
+
+	case strings.Contains(sql, "dm_os_volume_stats"):
+		return []map[string]any{
+			{"volume_mount_point": "C:\\", "logical_volume_name": "", "total_gb": 120.0, "free_gb": 24.0},
+			{"volume_mount_point": "D:\\", "logical_volume_name": "DATA", "total_gb": 400.0, "free_gb": 42.0},
+			{"volume_mount_point": "E:\\", "logical_volume_name": "LOG", "total_gb": 300.0, "free_gb": 118.0},
+		}, nil
+
+	case strings.Contains(sql, "TOP 30 name, type_desc, is_disabled"):
+		return []map[string]any{
+			{"name": "1C_Admin", "type_desc": "SQL_LOGIN", "is_disabled": int64(0)},
+			{"name": "report_svc", "type_desc": "SQL_LOGIN", "is_disabled": int64(0)},
+		}, nil
+
+	case strings.Contains(sql, "ActivePowerScheme"):
+		return []map[string]any{{"Value": "381b4222-f694-41f0-9685-ff5bb260df2e"}}, nil
+
+	case strings.Contains(sql, "SuperSocketNetLib\\Tcp"):
+		return []map[string]any{{"Value": "1"}}, nil
+
+	case strings.Contains(sql, "SuperSocketNetLib\\Np"):
+		return []map[string]any{{"Value": "1"}}, nil
+
+	case strings.Contains(sql, "database_id = 2 AND type = 0"):
+		return []map[string]any{
+			{"name": "tempdev", "size_mb": 8192.0, "is_percent_growth": int64(1),
+				"growth": int64(10), "physical_name": "D:\\MSSQL\\DATA\\tempdb.mdf"},
+		}, nil
+
+	case strings.Contains(sql, "backupmediafamily"):
+		now := time.Now()
+		return []map[string]any{
+			{"db_name": "SalesDb", "physical_device_name": "D:\\Backup\\SalesDb_full.bak",
+				"backup_type": "D", "backup_finish_date": now.AddDate(0, 0, -2).Add(-5 * time.Hour),
+				"encryptor_type": nil},
+			{"db_name": "ReportsDb", "physical_device_name": "\\\\backup-srv\\sqlbackup\\ReportsDb.bak",
+				"backup_type": "D", "backup_finish_date": now.AddDate(0, 0, -9), "encryptor_type": nil},
+			{"db_name": "StatsDb", "physical_device_name": "D:\\Backup\\StatsDb_full.bak",
+				"backup_type": "D", "backup_finish_date": now.Add(-20 * time.Hour), "encryptor_type": nil},
+		}, nil
+
 	case strings.Contains(sql, "backupset"):
 		now := time.Now()
 		return []map[string]any{
@@ -488,7 +563,7 @@ func (e *DemoEngine) Query(_ context.Context, sql string) ([]map[string]any, err
 				"size_mb": 73728.0, "is_percent_growth": int64(0), "growth": int64(128),
 				"physical_name": "D:\\MSSQL\\DATA\\ReportsDb.mdf"},
 			{"db_name": "tempdb", "file_name": "tempdev", "type_desc": "ROWS",
-				"size_mb": 8192.0, "is_percent_growth": int64(0), "growth": int64(8),
+				"size_mb": 8192.0, "is_percent_growth": int64(1), "growth": int64(10),
 				"physical_name": "D:\\MSSQL\\DATA\\tempdb.mdf"},
 			{"db_name": "StatsDb", "file_name": "StatsDb_data", "type_desc": "ROWS",
 				"size_mb": 51200.0, "is_percent_growth": int64(0), "growth": int64(64),
@@ -510,6 +585,18 @@ func (e *DemoEngine) perDBQuery(sql string) ([]map[string]any, error) {
 		db = "ReportsDb"
 	}
 	switch {
+	case strings.Contains(sql, "database_query_store_options"):
+		if db == "SalesDb" {
+			return []map[string]any{{"db_name": db, "actual_state_desc": "READ_WRITE",
+				"readonly_reason": int64(0), "query_capture_mode_desc": "AUTO",
+				"current_mb": int64(420), "max_mb": int64(1024)}}, nil
+		}
+		if db == "ReportsDb" {
+			return []map[string]any{{"db_name": db, "actual_state_desc": "READ_ONLY",
+				"readonly_reason": int64(8), "query_capture_mode_desc": "AUTO",
+				"current_mb": int64(1024), "max_mb": int64(1024)}}, nil
+		}
+		return []map[string]any{}, nil
 	case strings.Contains(sql, "missing_index"):
 		if db != "SalesDb" && db != "StatsDb" {
 			return []map[string]any{}, nil
